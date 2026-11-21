@@ -3,8 +3,8 @@
 An AI storefront generator for Indian creators. Type your Instagram username or one line about what you do, and in about 10 seconds you get a store page: a bio, 2–4 digital products with formats and INR prices, and a mobile page you can share on WhatsApp.
 
 - **Live app:** https://ai-storefront-generator-chi.vercel.app
-- **Decision doc:** _add link_
-- **Demo video:** _add Loom link_
+- **Decision doc:** [docs/Decision_Doc.pdf](docs/Decision_Doc.pdf) (3 pages)
+- **Demo video:** _Loom link coming_
 
 ## What it does
 
