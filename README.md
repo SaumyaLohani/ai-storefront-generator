@@ -30,7 +30,7 @@ All calls go to Google Gemini through its REST API, with no mocks. The code is i
   - No hype words.
   - No promised results in health, money, astrology or exam niches.
   - Hinglish is written in Roman script, Hindi in Devanagari.
-- **Instagram.** This is a best-effort fetch of the public profile: name, bio, follower count and recent captions. Private, missing or blocked profiles fall back to the description, with a clear message telling the creator what happened.
+- **Instagram.** This is a best-effort fetch of the public profile: name, bio, follower count and recent captions. Private, missing or blocked profiles fall back to the description, with a clear message telling the creator what happened. In practice Instagram blocks most requests from cloud servers such as Vercel, so on the live site the description is usually what drives generation. A production version would use the Instagram Graph API with the creator's login.
 
 ## Run it locally
 

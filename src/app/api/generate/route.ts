@@ -20,7 +20,9 @@ const Body = z.object({
 
 const IG_MESSAGE: Record<string, string> = {
   invalid: "That doesn't look like an Instagram username. Usernames only use letters, numbers, dots and underscores.",
-  not_found: "We couldn't find that Instagram account. Check the spelling, or just tell us about yourself below.",
+  // Instagram answers 404 both for missing accounts and for requests it blocks from cloud servers,
+  // so this message can't claim the account doesn't exist.
+  not_found: "We couldn't open that Instagram profile. Check the spelling, or just tell us in a line what you do below.",
   private: "Your account is private, so we could only read your bio. Add a line about what you do to get better ideas.",
   unavailable:
     "Instagram isn't letting us read profiles right now. No problem: tell us in a line or two what you do.",
