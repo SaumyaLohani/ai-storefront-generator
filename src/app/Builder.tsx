@@ -29,7 +29,7 @@ type Form = { handle: string; about: string; audience: Audience; language: Langu
 type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string; message: string; data?: Record<string, unknown> };
 
 const DRAFT_KEY = "sf-draft-v1";
-const FORM_KEY = "sf-form-v1";
+const OLD_FORM_KEY = "sf-form-v1"; // earlier versions pre-filled the form on reload
 
 async function api<T>(path: string, body?: unknown, signal?: AbortSignal, method = "POST"): Promise<ApiResult<T>> {
   try {
@@ -189,8 +189,7 @@ export default function Builder() {
     if (opened) return off;
     const d = load<Draft>(DRAFT_KEY);
     if (d?.storefront?.products?.length) setSaved(d);
-    const f = load<Form>(FORM_KEY);
-    if (f) setForm((cur) => ({ ...cur, ...f }));
+    save(OLD_FORM_KEY, null); // every visit starts with an empty form
     return off;
   }, []);
 
@@ -209,9 +208,6 @@ export default function Builder() {
   useEffect(() => {
     if (draft) save(DRAFT_KEY, draft);
   }, [draft]);
-  useEffect(() => {
-    save(FORM_KEY, form);
-  }, [form]);
 
   const flash = useCallback((text: string, opts: { undo?: boolean; tone?: "err" } = {}) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -1016,6 +1012,7 @@ export default function Builder() {
             id="about"
             ref={aboutRef}
             className="input min-h-[104px] resize-y"
+            autoComplete="off"
             placeholder="What do you post about or teach, and who follows you? English, Hinglish or Hindi is fine."
             maxLength={1000}
             aria-invalid={aboutInvalid && formMsg?.tone === "err" ? true : undefined}
