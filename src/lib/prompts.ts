@@ -55,6 +55,32 @@ function genderCheck(known: string) {
       : "the bio guesses the creator's gender with a first-person verb (like 'karta hoon', 'karti hoon', 'करता हूँ'). Rewrite it without any such verb or slash form, e.g. 'Yahan aapko milega...' or 'Aap seekhenge...'";
   };
 }
+const CLAIM = new RegExp(
+  [
+    "\\b(?:thousands|hundreds|lakhs?|millions|dozens) of\\b",
+    "\\b(?:have|i've|we've|has) (?:already )?(?:helped|taught|trained|coached|guided|mentored|served)\\b",
+    "\\bhelped (?:many|several|countless|numerous|over|more than|hundreds|thousands|\\d)",
+    "\\b(?:trusted|loved) by\\b",
+    "\\b\\d[\\d,]*\\+?\\s*(?:k\\s*)?(?:happy |satisfied )?(?:students|learners|clients|customers|followers|subscribers|families|women|people)\\b",
+    "\\b(?:award[- ]winning|certified|\\d+\\+? years? of)\\b",
+    "(?:hazaar|hazaro|hazaron|saikdo|saikdon|lakhon|kaafi|kai|bahut) (?:saare )?(?:students|logon|log|bachon|clients|learners) ki (?:help|madad)",
+    "(?:हज़ारों|हजारों|सैकड़ों|लाखों)",
+    "(?:मदद की है|सिखाया है|पढ़ाया है)",
+  ].join("|"),
+  "i",
+);
+/** Social proof or credentials the creator never gave us. Skipped when their own words make such
+ *  a claim. Asks for a rewrite once only, so a false alarm can't fail the request. */
+function claimCheck(known: string) {
+  const allowed = CLAIM.test(known);
+  let asked = false;
+  return (texts: string[]): string | null => {
+    const hit = !allowed && !asked && texts.map((t) => t.match(CLAIM)?.[0]).find(Boolean);
+    if (!hit) return null;
+    asked = true;
+    return `"${hit}" reads as a claim about the creator's track record that they never gave. Remove invented social proof, numbers of people and credentials`;
+  };
+}
 const productTexts = (p: { description: string; includes: string[] }) => [p.description, p.includes.join(" ")];
 
 const PRICE_GUIDE = Object.entries(PRICE_BANDS)
@@ -87,7 +113,7 @@ WRITING RULES
 INPUT QUALITY
 - If the input has no real information about a person or skill (gibberish, random characters, a single unrelated word like "hello"), set inputUsable=false, give a friendly followUpQuestion, and still fill the other fields with short placeholders.
 - If the input is thin but real (e.g. just "yoga teacher"), set inputUsable=true, make sensible assumptions and list them in assumptions (max 3, short, written to the creator, e.g. "You teach beginners online").
-- Never claim facts you weren't given (follower counts, degrees, years of experience).
+- Never claim facts you weren't given (follower counts, degrees, certifications, years of experience, awards, past results). No invented social proof in any field or language: never say the creator has already helped, taught or been trusted by anyone ("I've helped many students", "join thousands of learners", "मैंने कई छात्रों की मदद की है") unless the input says so. Say what the creator does or what the buyer will get instead.
 - name: use the creator's real name or brand only if it appears in the input. Otherwise NEVER put any human first name or surname in the store name, bio or titles (no "Priya", "Sanchit", "Acharya Sharma"); create a short brand-style store name from their niche (e.g. "20-Min Fit Club", "Tiffin Tales Kitchen") and add an assumption like "We named your store '20-Min Fit Club'. Change it to your own name or brand."`;
 
 function creatorContext(src: Source, ig: InstagramSignals | null, audience: Audience) {
@@ -212,7 +238,9 @@ export async function generateStorefront(
     ? `\n\nThe store is already called "${opts.keepName}". Use exactly that name and do not list the name as an assumption.`
     : "";
   const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
-  const gender = genderCheck(`${src.about} ${ig?.biography ?? ""}`);
+  const known = `${src.about} ${ig?.biography ?? ""}`;
+  const gender = genderCheck(known);
+  const claims = claimCheck(known);
   const prompt = `TODAY: ${today} (use the current or next year if a product is dated)\n\nCREATOR\n${creatorContext(src, ig, audience)}\n\nLANGUAGE\n${LANGUAGE_RULE[src.language]}\n\nCreate their storefront with 3 products (2 if the input is very thin, 4 only if they clearly have a large range).${avoid}${keep}`;
 
   const { data, model } = await generateJSON({
@@ -222,6 +250,7 @@ export async function generateStorefront(
     validate: RawStore,
     check: (d) =>
       storeCheck(d) ??
+      (d.inputUsable ? claims([d.bio, d.tagline, ...d.products.map((p) => p.description)]) : null) ??
       (d.inputUsable ? gender(d.bio) : null) ?? (d.inputUsable ? scriptProblem(src.language, [d.bio, ...d.products.flatMap(productTexts)]) : null),
     temperature: opts.avoid?.length ? 1.0 : 0.85,
   });
@@ -356,6 +385,8 @@ export async function regeneratePart(
 
   const today = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
   const ctx = `TODAY: ${today}\n\nCREATOR (original input)\n${creatorContext(src, null, audience)}\n\nCURRENT STORE (the creator may have edited it; respect their edits)\n${storeSummary(store)}\n\nLANGUAGE\n${LANGUAGE_RULE[store.language]}`;
+  // the creator may have typed a real claim into the page or the instruction: respect it
+  const claims = claimCheck([src.about, store.bio, instruction, ...store.products.map((p) => p.description)].join(" "));
   const ask = instruction ? `\nThe creator's instruction: "${instruction.slice(0, 200)}"` : "";
 
   if (part.kind === "bio") {
@@ -365,7 +396,7 @@ export async function regeneratePart(
       prompt: `${ctx}\n\nTASK: Write a NEW tagline and bio for this store, different from the current one.${ask}`,
       schema: bioSchema,
       validate: BioOut,
-      check: (d) => scriptProblem(store.language, [d.bio]) ?? gender(d.bio),
+      check: (d) => scriptProblem(store.language, [d.bio]) ?? claims([d.bio, d.tagline]) ?? gender(d.bio),
       temperature: 1,
     });
     return { tagline: data.tagline.trim().slice(0, 120), bio: data.bio.trim().slice(0, 600) };
@@ -378,7 +409,7 @@ export async function regeneratePart(
       prompt: `${ctx}\n\nTASK: Rewrite the title, description and includes of product ${part.index + 1} ("${cur.title}"). Keep format "${cur.format}" and price ${cur.price}. Make it clearer and more convincing than the current copy.\nCurrent description: ${cur.description}${ask}`,
       schema: productSchema,
       validate: RawProduct,
-      check: (p) => scriptProblem(store.language, productTexts(p)),
+      check: (p) => scriptProblem(store.language, productTexts(p)) ?? claims([p.description]),
       temperature: 1,
     });
     return {
@@ -403,7 +434,7 @@ export async function regeneratePart(
     schema: productSchema,
     validate: RawProduct,
     check: (p) =>
-      others.some((o) => o.title.toLowerCase() === p.title.toLowerCase()) ? "duplicate of an existing product" : scriptProblem(store.language, productTexts(p)),
+      others.some((o) => o.title.toLowerCase() === p.title.toLowerCase()) ? "duplicate of an existing product" : (scriptProblem(store.language, productTexts(p)) ?? claims([p.description])),
     temperature: 1,
   });
   const keepId = part.kind === "product" ? store.products[part.index].id : undefined;
