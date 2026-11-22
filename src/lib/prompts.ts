@@ -38,6 +38,17 @@ function scriptProblem(language: Language, texts: string[]): string | null {
   }
   return null;
 }
+const GENDERED = /\b[a-z]+(?:ta|ti|raha|rahi)\s+(?:hoon|hun|hu|hoo)\b|(?:ता|ती|रहा|रही)\s+(?:हूँ|हूं)/i;
+/** "karta/karti hoon" guesses the creator's gender unless their own words used such a form.
+ *  Asks for a rewrite once only: a matter of tone must never fail the whole request. */
+function genderCheck(known: string) {
+  let asked = GENDERED.test(known);
+  return (text: string): string | null => {
+    if (asked || !GENDERED.test(text)) return null;
+    asked = true;
+    return "the bio guesses the creator's gender with a first-person verb (like 'karta hoon', 'karti hoon', 'करता हूँ'). Rewrite it without any such verb, e.g. 'Yahan aapko milega...' or 'Aap seekhenge...'";
+  };
+}
 const productTexts = (p: { description: string; includes: string[] }) => [p.description, p.includes.join(" ")];
 
 const PRICE_GUIDE = Object.entries(PRICE_BANDS)
@@ -195,6 +206,7 @@ export async function generateStorefront(
     ? `\n\nThe store is already called "${opts.keepName}". Use exactly that name and do not list the name as an assumption.`
     : "";
   const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
+  const gender = genderCheck(`${src.about} ${ig?.biography ?? ""}`);
   const prompt = `TODAY: ${today} (use the current or next year if a product is dated)\n\nCREATOR\n${creatorContext(src, ig, audience)}\n\nLANGUAGE\n${LANGUAGE_RULE[src.language]}\n\nCreate their storefront with 3 products (2 if the input is very thin, 4 only if they clearly have a large range).${avoid}${keep}`;
 
   const { data, model } = await generateJSON({
@@ -203,7 +215,8 @@ export async function generateStorefront(
     schema: storeSchema,
     validate: RawStore,
     check: (d) =>
-      storeCheck(d) ?? (d.inputUsable ? scriptProblem(src.language, [d.bio, ...d.products.flatMap(productTexts)]) : null),
+      storeCheck(d) ??
+      (d.inputUsable ? gender(d.bio) : null) ?? (d.inputUsable ? scriptProblem(src.language, [d.bio, ...d.products.flatMap(productTexts)]) : null),
     temperature: opts.avoid?.length ? 1.0 : 0.85,
   });
 
@@ -287,7 +300,8 @@ const translateSchema = {
   required: ["tagline", "bio", "products"],
 };
 
-async function translateStore(store: Storefront, language: Language): Promise<Partial<Storefront>> {
+async function translateStore(store: Storefront, src: Source, language: Language): Promise<Partial<Storefront>> {
+  const gender = genderCheck(src.about);
   const copy = {
     tagline: store.tagline,
     bio: store.bio,
@@ -308,7 +322,7 @@ async function translateStore(store: Storefront, language: Language): Promise<Pa
         ? `return exactly ${store.products.length} products`
         : d.products.some((p, i) => p.includes.length !== copy.products[i].includes.length)
           ? "keep the same number of includes for each product"
-          : scriptProblem(language, [d.bio, ...d.products.flatMap(productTexts)]),
+          : (scriptProblem(language, [d.bio, ...d.products.flatMap(productTexts)]) ?? gender(d.bio)),
     temperature: 0.6,
   });
   return {
@@ -332,19 +346,20 @@ export async function regeneratePart(
   instruction: string,
   audience: Audience,
 ): Promise<Partial<Storefront> & { product?: Product }> {
-  if (part.kind === "translate") return translateStore(store, part.language);
+  if (part.kind === "translate") return translateStore(store, src, part.language);
 
   const today = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
   const ctx = `TODAY: ${today}\n\nCREATOR (original input)\n${creatorContext(src, null, audience)}\n\nCURRENT STORE (the creator may have edited it; respect their edits)\n${storeSummary(store)}\n\nLANGUAGE\n${LANGUAGE_RULE[store.language]}`;
   const ask = instruction ? `\nThe creator's instruction: "${instruction.slice(0, 200)}"` : "";
 
   if (part.kind === "bio") {
+    const gender = genderCheck(src.about);
     const { data } = await generateJSON({
       system: SYSTEM,
       prompt: `${ctx}\n\nTASK: Write a NEW tagline and bio for this store, different from the current one.${ask}`,
       schema: bioSchema,
       validate: BioOut,
-      check: (d) => scriptProblem(store.language, [d.bio]),
+      check: (d) => scriptProblem(store.language, [d.bio]) ?? gender(d.bio),
       temperature: 1,
     });
     return { tagline: data.tagline.trim().slice(0, 120), bio: data.bio.trim().slice(0, 600) };
