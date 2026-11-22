@@ -28,6 +28,14 @@ const IG_MESSAGE: Record<string, string> = {
     "Instagram isn't letting us read profiles right now. No problem: tell us in a line or two what you do.",
 };
 
+// Shown on the store screen, after a store was built from the description.
+const IG_BUILT_MESSAGE: Record<string, string> = {
+  invalid: "That doesn't look like an Instagram username, so we built your store from your description.",
+  not_found: "We couldn't open that Instagram profile, so we built your store from your description.",
+  private: "Your account is private, so we built your store from your bio and description.",
+  unavailable: "Instagram isn't letting us read profiles right now, so we built your store from your description.",
+};
+
 export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return json({ error: "bad_request", message: "Something went wrong. Please try again." }, 400);
@@ -92,7 +100,7 @@ export async function POST(req: Request) {
             followers: ig.followers ?? null,
             fullName: ig.fullName ?? null,
             usedPosts: ig.captions?.length ?? 0,
-            message: ig.status === "found" ? null : IG_MESSAGE[ig.status] ?? null,
+            message: ig.status === "found" ? null : (IG_BUILT_MESSAGE[ig.status] ?? null),
           }
         : null,
     });
