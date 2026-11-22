@@ -4,7 +4,7 @@ An AI storefront generator for Indian creators. Type your Instagram username or 
 
 - **Live app:** https://ai-storefront-generator-chi.vercel.app
 - **Decision doc:** [docs/Decision_Doc.pdf](docs/Decision_Doc.pdf) (3 pages)
-- **Demo video:** _Loom link coming_
+- **Demo video:** [Watch on Google Drive](https://drive.google.com/file/d/1z8Syf3OyHvhPdgJWSTfHtm7A7ooivTSM/view?usp=sharing)
 
 ## What it does
 
