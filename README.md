@@ -26,7 +26,7 @@ All calls go to Google Gemini through its REST API, with no mocks. The code is i
   - Vague input ("hello") makes the model reply `inputUsable=false` with one follow-up question, and the app shows that question instead of a made-up store.
   - Thin input ("fitness") still gets a store, and the app shows the guesses it made so the creator can correct them.
 - **Writing rules.**
-  - No invented human names.
+  - No invented human names, social proof ("thousands of learners") or credentials. Code checks for these and asks the model to rewrite.
   - No hype words.
   - No promised results in health, money, astrology or exam niches.
   - Hinglish is written in Roman script, Hindi in Devanagari.
