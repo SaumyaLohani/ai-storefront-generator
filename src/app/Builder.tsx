@@ -485,6 +485,7 @@ export default function Builder() {
     setDraft(null);
     setSaved(null);
     setHistory([]);
+    setForm({ handle: "", about: "", audience: "unknown", language: "english" });
     setStage("input");
     setFormMsg(null);
     window.scrollTo({ top: 0 });
