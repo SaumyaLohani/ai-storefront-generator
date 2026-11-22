@@ -157,7 +157,7 @@ export async function generateJSON<T>(
             model,
             opts as CallOpts<unknown>,
             feedback,
-            Math.min(remaining, 15000),
+            Math.min(remaining, 25000),
           );
           console.log(
             `[ai] ${model} ok in ${Date.now() - t0}ms (attempt ${attempts})`,
