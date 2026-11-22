@@ -50,11 +50,13 @@ export const AUDIENCE_LABEL: Record<Audience, string> = {
   large: "100K+",
 };
 
+export const MAX_PRICE = 100000;
+
 export const ProductSchema = z.object({
-  id: z.string(),
+  id: z.string().min(1).max(24),
   format: z.enum(FORMATS),
   title: z.string().trim().min(1).max(90),
-  price: z.number().int().min(0).max(100000),
+  price: z.number().int().min(0).max(MAX_PRICE),
   priceNote: z.string().max(40).default(""), // e.g. "per month", "per session"
   priceRationale: z.string().max(400).default(""),
   description: z.string().trim().min(1).max(700),

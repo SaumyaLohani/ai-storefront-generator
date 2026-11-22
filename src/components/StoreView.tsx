@@ -1,8 +1,8 @@
 "use client";
 
-import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { FORMATS, FORMAT_LABEL, type Format, type Product, type Storefront } from "@/lib/types";
-import { inr } from "@/lib/pricing";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import { FORMATS, FORMAT_CTA, FORMAT_LABEL, MAX_PRICE, type Format, type Product, type Storefront } from "@/lib/types";
+import { PRICE_BANDS, inr } from "@/lib/pricing";
 
 /* ---------- inline-editable text ---------- */
 
@@ -32,6 +32,18 @@ function AutoText({
     el.style.height = "auto";
     el.style.height = el.scrollHeight + "px";
   }, [value]);
+  // re-fit when the width changes (rotate, resize) or the web font arrives
+  useEffect(() => {
+    const fit = () => {
+      const el = ref.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = el.scrollHeight + "px";
+    };
+    window.addEventListener("resize", fit);
+    document.fonts?.ready.then(fit).catch(() => {});
+    return () => window.removeEventListener("resize", fit);
+  }, []);
   return (
     <textarea
       ref={ref}
@@ -51,8 +63,9 @@ function AutoText({
 }
 
 function initials(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "★";
+  // first letter or digit of the first two words; skips emoji and symbols
+  const firsts = name.split(/\s+/).map((w) => w.match(/[\p{L}\p{N}]/u)?.[0]).filter(Boolean);
+  return firsts.slice(0, 2).join("").toUpperCase() || "★";
 }
 
 /* ---------- the store page ---------- */
@@ -62,7 +75,7 @@ type Props = {
   editable?: boolean;
   onChange?: (s: Storefront) => void;
   bioTools?: ReactNode;
-  bioBusy?: boolean;
+  bioBusy?: string | false;
   productTools?: (index: number) => ReactNode;
   productBusy?: (index: number) => string | null;
   afterProducts?: ReactNode;
@@ -100,7 +113,7 @@ export default function StoreView({
         <div className="relative mx-auto mt-4 max-w-md">
           {bioBusy && (
             <div className="busy-veil">
-              <span className="spin" /> Writing a new bio…
+              <span className="spin" /> {bioBusy}
             </div>
           )}
           {editable ? (
@@ -131,7 +144,25 @@ export default function StoreView({
               {store.tagline && <p className="sf-muted mt-1 text-[15px] font-semibold">{store.tagline}</p>}
             </>
           )}
-          {store.handle && (
+          {editable && (
+            <label className="sf-muted mt-2 flex items-center justify-center text-sm font-medium">
+              @
+              <input
+                aria-label="Instagram username"
+                className="ed"
+                style={{ width: "auto", minWidth: "11ch", margin: 0, paddingLeft: 2 }}
+                size={Math.max(11, store.handle.length + 1)}
+                value={store.handle}
+                placeholder="instagram (optional)"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                maxLength={30}
+                onChange={(e) => set({ handle: e.target.value.toLowerCase().replace(/[^a-z0-9._]/g, "") })}
+              />
+            </label>
+          )}
+          {!editable && store.handle && (
             <a
               href={`https://instagram.com/${store.handle}`}
               target="_blank"
@@ -188,7 +219,11 @@ export default function StoreView({
                       backgroundPosition: "right 8px center",
                     }}
                     value={p.format}
-                    onChange={(e) => setP(i, { format: e.target.value as Format })}
+                    onChange={(e) => {
+                      const f = e.target.value as Format;
+                      // the button text, "per month" note and price reason all belong to the old format
+                      setP(i, { format: f, cta: FORMAT_CTA[f], priceNote: PRICE_BANDS[f].note, priceRationale: "" });
+                    }}
                   >
                     {FORMATS.map((f) => (
                       <option key={f} value={f}>
@@ -206,13 +241,13 @@ export default function StoreView({
                       <input
                         aria-label="Price in rupees"
                         inputMode="numeric"
-                        className="ed text-left"
-                        style={{ width: `calc(${Math.max(1, String(p.price || "").length)}ch + 14px)`, margin: 0, paddingLeft: 2 }}
+                        className="ed text-left tabular-nums"
+                        style={{ width: `calc(${Math.max(1, String(p.price || "").length)}ch + 9px)`, margin: "0 -6px 0 0", paddingLeft: 2, paddingRight: 2 }}
                         value={p.price ? String(p.price) : ""}
                         placeholder="0"
                         onChange={(e) => {
-                          const n = Number(e.target.value.replace(/[^\d]/g, "").slice(0, 6));
-                          setP(i, { price: n });
+                          const n = Math.min(MAX_PRICE, Number(e.target.value.replace(/[^\d]/g, "").slice(0, 6)));
+                          setP(i, { price: n, priceRationale: "" }); // AI's reason no longer applies
                         }}
                       />
                     </label>

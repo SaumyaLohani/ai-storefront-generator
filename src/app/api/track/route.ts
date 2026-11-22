@@ -7,7 +7,10 @@ export async function POST(req: Request) {
     const slug = String(body.slug || "");
     const event = body.event === "click" ? "click" : "view";
     const pid = String(body.productId || "").replace(/[^a-z0-9]/g, "").slice(0, 12);
-    if (await getStore(slug)) await track(slug, event === "view" ? "views" : `click:${pid}`);
+    const store = await getStore(slug);
+    if (!store) return new Response(null, { status: 204 });
+    if (event === "view") await track(slug, "views");
+    else if (store.storefront.products.some((p) => p.id === pid)) await track(slug, `click:${pid}`);
   } catch {
     /* analytics must never break the page */
   }

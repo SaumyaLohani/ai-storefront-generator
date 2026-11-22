@@ -8,7 +8,7 @@ const Body = z.object({
   source: SourceSchema,
   slug: z.string().max(40).optional(),
   editKey: z.string().max(64).optional(),
-});
+}).refine((b) => new Set(b.storefront.products.map((p) => p.id)).size === b.storefront.products.length);
 
 export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => ({})));

@@ -100,6 +100,7 @@ const LOADING_STEPS = (hasHandle: boolean) => [
 ];
 
 type RegenTarget = { kind: "bio" } | { kind: "product"; index: number } | { kind: "product_copy"; index: number } | { kind: "add_product" };
+type AiTask = RegenTarget | { kind: "translate"; language: Language };
 
 const REGEN_CHIPS: Record<RegenTarget["kind"], string[]> = {
   bio: ["Shorter", "More personal", "More professional", "Mention who I help"],
@@ -119,11 +120,11 @@ const REGEN_TITLE: Record<RegenTarget["kind"], string> = {
 export default function Builder() {
   const [stage, setStage] = useState<"input" | "loading" | "edit">("input");
   const [form, setForm] = useState<Form>({ handle: "", about: "", audience: "unknown", language: "english" });
-  const [formMsg, setFormMsg] = useState<{ field: "handle" | "about" | "general"; text: string; tone: "warn" | "err" } | null>(null);
+  const [formMsg, setFormMsg] = useState<{ field: "handle" | "about" | "general" | "link"; text: string; tone: "warn" | "err" } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saved, setSaved] = useState<Draft | null>(null); // a draft from a previous visit
   const [history, setHistory] = useState<Storefront[]>([]);
-  const [busy, setBusy] = useState<{ bio?: boolean; products: Record<number, string>; adding?: boolean }>({ products: {} });
+  const [busy, setBusy] = useState<{ bio?: boolean; products: Record<string, string>; adding?: boolean }>({ products: {} });
   const [toast, setToast] = useState<{ text: string; undo?: boolean; tone?: "err" } | null>(null);
   const [regen, setRegen] = useState<RegenTarget | null>(null);
   const [regenText, setRegenText] = useState("");
@@ -135,6 +136,7 @@ export default function Builder() {
   const [stats, setStats] = useState<{ views: number; clicks: number } | null>(null);
   const [loadStep, setLoadStep] = useState(0);
   const [slow, setSlow] = useState(false);
+  const [opening, setOpening] = useState(false); // loading a store from its edit link
   const [copied, setCopied] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const aboutRef = useRef<HTMLTextAreaElement>(null);
@@ -142,11 +144,13 @@ export default function Builder() {
 
   /* ---------- boot: edit link, saved draft, saved form ---------- */
   useEffect(() => {
-    const m = location.hash.match(/^#edit=([a-z0-9-]+)\.([A-Za-z0-9_-]+)$/);
-    if (m) {
+    const openEditLink = () => {
+      const m = location.hash.match(/^#edit=([a-z0-9-]+)\.([A-Za-z0-9_-]+)$/);
+      if (!m) return false;
       const [, slug, editKey] = m;
       window.history.replaceState(null, "", location.pathname);
       (async () => {
+        setOpening(true);
         setStage("loading");
         const r = await api<{ storefront: Storefront; source: Source }>(
           `/api/store?slug=${slug}&key=${encodeURIComponent(editKey)}`,
@@ -154,21 +158,52 @@ export default function Builder() {
           undefined,
           "GET",
         );
+        setOpening(false);
         if (r.ok) {
           const d: Draft = { storefront: r.data.storefront, source: r.data.source, assumptions: [], instagram: null, published: { slug, editKey } };
+          openSession();
+          setHistory([]);
+          setSaved(null);
+          setPreview(false);
           setDraft(d);
           setStage("edit");
         } else {
           setStage("input");
-          setFormMsg({ field: "general", tone: "err", text: "That edit link didn't work. It may be incomplete. You can create a new store below." });
+          setFormMsg({
+            field: "link",
+            tone: "err",
+            text:
+              r.status === 403
+                ? "That edit link didn't work. It may be incomplete. You can create a new store below."
+                : "We couldn't open your store just now. Check your internet and open your edit link again.",
+          });
         }
       })();
-      return;
-    }
+      return true;
+    };
+    // pasting the edit link while the app is already open only changes the hash
+    const onHash = () => void openEditLink();
+    window.addEventListener("hashchange", onHash);
+    const off = () => window.removeEventListener("hashchange", onHash);
+    const opened = openEditLink();
+    if (opened) return off;
     const d = load<Draft>(DRAFT_KEY);
     if (d?.storefront?.products?.length) setSaved(d);
     const f = load<Form>(FORM_KEY);
     if (f) setForm((cur) => ({ ...cur, ...f }));
+    return off;
+  }, []);
+
+  // Escape closes whichever sheet is open
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setRegen(null);
+      setConfirmAll(null);
+      setShareOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -212,21 +247,24 @@ export default function Builder() {
     const h = historyRef.current;
     const d = draftRef.current;
     if (!h.length || !d) return;
+    if (typingRef.current) clearTimeout(typingRef.current);
+    typingRef.current = null; // the next keystroke starts a new undo step
     setDraft({ ...d, storefront: h[h.length - 1], dirty: true });
     setHistory(h.slice(0, -1));
     setToast(null);
   };
 
   /* ---------- generation ---------- */
-  const startGenerate = async (opts: { fresh?: boolean; language?: Language; fromDraft?: Draft } = {}) => {
+  const startGenerate = async (opts: { fromDraft?: Draft } = {}) => {
     const base = opts.fromDraft;
     const body = base
       ? {
-          handle: base.source.handle,
+          handle: base.storefront.handle, // they may have corrected it on the page
           about: base.source.about,
           audience: base.source.audience,
-          language: opts.language ?? base.storefront.language,
-          avoid: opts.fresh ? base.storefront.products.map((p) => p.title) : undefined,
+          language: base.storefront.language,
+          keepName: base.storefront.name.trim() || undefined,
+          avoid: base.storefront.products.map((p) => p.title),
         }
       : { ...form };
 
@@ -242,10 +280,12 @@ export default function Builder() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    cancelledRef.current = false;
     const killer = setTimeout(() => ctrl.abort(), 60000);
 
     const prevStage = stage;
     setStage("loading");
+    window.scrollTo({ top: 0 });
     setLoadStep(0);
     setSlow(false);
     const steps = LOADING_STEPS(!!body.handle?.trim()).length;
@@ -271,33 +311,38 @@ export default function Builder() {
         dirty: true,
       };
       if (base) pushHistory(base.storefront);
-      else setHistory([]);
+      else {
+        setHistory([]);
+        openSession();
+      }
       setDraft(d);
       setSaved(null);
       setStage("edit");
       setPreview(false);
       setShowErrors(false);
       window.scrollTo({ top: 0 });
-      if (base) flash(opts.language ? "Rewritten in the new language" : "Fresh ideas ready", { undo: true });
+      if (base) flash("Fresh ideas ready", { undo: true });
       return;
     }
 
     // failure paths: never a dead end
     if (base) {
       setStage(prevStage === "loading" ? "edit" : prevStage);
-      if (r.error === "aborted") return;
-      const busy = r.error === "ai_down" || r.error === "busy";
-      flash(busy ? "AI is busy right now. Your store is unchanged, so try again in a moment." : r.message || "Couldn't regenerate. Your store is unchanged.", { tone: "err" });
+      if (r.error === "aborted" && cancelledRef.current) return;
+      const busy = r.error === "ai_down" || r.error === "busy" || r.error === "aborted";
+      const noProfile = r.error === "need_about" && "We couldn't read your Instagram again just now. Your store is unchanged.";
+      flash(busy ? "AI is busy right now. Your store is unchanged, so try again in a moment." : noProfile || r.message || "Couldn't regenerate. Your store is unchanged.", { tone: "err" });
       return;
     }
     setStage("input");
     if (r.error === "aborted") {
-      if (ctrl.signal.aborted && !cancelledRef.current)
-        setFormMsg({ field: "general", tone: "err", text: "That took too long. Your details are saved, so tap Create my store again." });
-      cancelledRef.current = false;
+      if (!cancelledRef.current)
+        setFormMsg({ field: "general", tone: "err", text: "That took too long. Your details are saved, so tap Try again." });
       return;
     }
-    if (r.error === "need_about") {
+    if (r.error === "need_about" && r.data?.igStatus === "invalid") {
+      setFormMsg({ field: "handle", tone: "err", text: r.message });
+    } else if (r.error === "need_about") {
       setFormMsg({ field: "about", tone: "warn", text: r.message });
       setTimeout(() => aboutRef.current?.focus(), 50);
     } else if (r.error === "unclear" || r.error === "blocked") {
@@ -316,18 +361,36 @@ export default function Builder() {
   };
 
   /* ---------- part regeneration ---------- */
-  const runRegen = async (target: RegenTarget, instruction: string) => {
+  // bumped whenever another store opens, so a late AI answer can't land in the wrong one
+  const session = useRef(0);
+  const openSession = () => {
+    session.current++;
+    setBusy({ products: {} });
+    setStats(null);
+    setShareOpen(false);
+    setRegen(null);
+    setToast(null);
+    typingRef.current = null;
+  };
+  const openRegen = (t: RegenTarget) => {
+    setRegenText("");
+    setRegen(t);
+  };
+  const runRegen = async (target: AiTask, instruction: string) => {
     if (!draft) return;
     setRegen(null);
     setRegenText("");
     const snapshot = draft.storefront;
+    const run = session.current;
+    const busyId = "index" in target ? snapshot.products[target.index]?.id : undefined;
+    if ("index" in target && !busyId) return;
     const label =
       target.kind === "bio" ? "" : target.kind === "product_copy" ? "Rewriting…" : target.kind === "product" ? "Finding a new idea…" : "";
     setBusy((b) => ({
       ...b,
-      bio: target.kind === "bio" ? true : b.bio,
+      bio: target.kind === "bio" || target.kind === "translate" ? true : b.bio,
       adding: target.kind === "add_product" ? true : b.adding,
-      products: "index" in target ? { ...b.products, [target.index]: label } : b.products,
+      products: target.kind === "translate" ? Object.fromEntries(snapshot.products.map((p) => [p.id, "Translating…"])) : busyId ? { ...b.products, [busyId]: label } : b.products,
     }));
     const clean = cleanForSend(snapshot);
     const r = await api<{ patch: Partial<Storefront> & { product?: Product } }>("/api/regenerate", {
@@ -336,12 +399,14 @@ export default function Builder() {
       part: target,
       instruction,
     });
+    if (run !== session.current) return; // a different store is open now
     setBusy((b) => {
       const products = { ...b.products };
-      if ("index" in target) delete products[target.index];
+      if (busyId) delete products[busyId];
+      if (target.kind === "translate") snapshot.products.forEach((p) => delete products[p.id]);
       return {
         ...b,
-        bio: target.kind === "bio" ? false : b.bio,
+        bio: target.kind === "bio" || target.kind === "translate" ? false : b.bio,
         adding: target.kind === "add_product" ? false : b.adding,
         products,
       };
@@ -359,10 +424,16 @@ export default function Builder() {
     const patch = r.data.patch;
     let next: Storefront = cur;
     if (target.kind === "bio") next = { ...cur, tagline: patch.tagline ?? cur.tagline, bio: patch.bio ?? cur.bio };
-    else if (target.kind === "add_product" && patch.product) next = { ...cur, products: [...cur.products, patch.product].slice(0, 4) };
+    else if (target.kind === "translate" && patch.products) {
+      const byId = new Map(patch.products.map((p) => [p.id, p]));
+      next = { ...cur, language: target.language, tagline: patch.tagline ?? cur.tagline, bio: patch.bio ?? cur.bio, products: cur.products.map((p) => byId.get(p.id) ?? p) };
+    } else if (target.kind === "add_product" && cur.products.length >= 4) {
+      flash("Your store already has 4 products, so we didn't add another.");
+      return;
+    } else if (target.kind === "add_product" && patch.product) next = { ...cur, products: [...cur.products, patch.product].slice(0, 4) };
     else if ("index" in target && patch.product) {
       // find by id in case products were reordered/removed while we waited
-      const id = snapshot.products[target.index]?.id;
+      const id = busyId!;
       if (!cur.products.some((p) => p.id === id)) {
         flash("That product was removed, so we skipped the rewrite.");
         return;
@@ -372,7 +443,7 @@ export default function Builder() {
     pushHistory(cur);
     setDraft({ ...d, storefront: next, dirty: true });
     flash(
-      target.kind === "bio" ? "New bio written" : target.kind === "add_product" ? "Product added" : target.kind === "product" ? "New idea swapped in" : "Rewritten",
+      target.kind === "translate" ? "Rewritten in the new language" : target.kind === "bio" ? "New bio written" : target.kind === "add_product" ? "Product added" : target.kind === "product" ? "New idea swapped in" : "Rewritten",
       { undo: true },
     );
     if (target.kind === "add_product") setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }), 80);
@@ -425,7 +496,8 @@ export default function Builder() {
       return;
     }
     setPublishing(true);
-    const clean = cleanForSend(draft.storefront);
+    const sent = draft.storefront;
+    const clean = cleanForSend(sent);
     const r = await api<{ slug: string; editKey: string; updated: boolean }>("/api/publish", {
       storefront: clean,
       source: draft.source,
@@ -437,7 +509,11 @@ export default function Builder() {
       flash(r.message, { tone: "err" });
       return;
     }
-    setDraft((d) => (d ? { ...d, storefront: clean, published: { slug: r.data.slug, editKey: r.data.editKey }, dirty: false } : d));
+    setDraft((d) => {
+      if (!d) return d;
+      const unchanged = d.storefront === sent; // otherwise they kept typing while we saved: keep those edits
+      return { ...d, storefront: unchanged ? clean : d.storefront, published: { slug: r.data.slug, editKey: r.data.editKey }, dirty: !unchanged };
+    });
     setShareOpen(true);
     if (r.data.updated) flash("Your live page is updated");
   };
@@ -480,11 +556,14 @@ export default function Builder() {
   };
 
   const startOver = () => {
-    if (draft && !confirm(draft.published ? "Start a new store? Your published page stays live." : "Start over? This draft will be cleared.")) return;
+    if (draft && !confirm(draft.published ? "Start a new store? Your published page stays live. To edit it later, first copy your private edit link (tap Share link)." : "Start over? This draft will be cleared.")) return;
     save(DRAFT_KEY, null);
     setDraft(null);
     setSaved(null);
     setHistory([]);
+    openSession();
+    setPreview(false);
+    setShowErrors(false);
     setForm({ handle: "", about: "", audience: "unknown", language: "english" });
     setStage("input");
     setFormMsg(null);
@@ -492,6 +571,13 @@ export default function Builder() {
   };
 
   /* ================= RENDER ================= */
+
+  if (stage === "loading" && opening)
+    return (
+      <div className="shell flex min-h-dvh items-center justify-center gap-3 font-semibold" aria-live="polite">
+        <span className="spin text-[var(--app-brand)]" /> Opening your store…
+      </div>
+    );
 
   if (stage === "loading") {
     const steps = LOADING_STEPS(!!(draft?.source.handle || form.handle).trim());
@@ -577,8 +663,8 @@ export default function Builder() {
               <div className="notice notice-warn">
                 <strong>We guessed a few things.</strong> Fix anything that&apos;s off:
                 <ul className="mt-1 list-disc pl-5">
-                  {draft.assumptions.map((a) => (
-                    <li key={a}>{a}</li>
+                  {draft.assumptions.map((a, i) => (
+                    <li key={i}>{a}</li>
                   ))}
                 </ul>
               </div>
@@ -593,27 +679,27 @@ export default function Builder() {
             editable={!preview}
             onChange={onEdit}
             showErrors={showErrors}
-            bioBusy={busy.bio}
+            bioBusy={busy.bio && (Object.values(busy.products).includes("Translating…") ? "Translating…" : "Writing a new bio…")}
             bioTools={
               preview ? undefined : (
-                <button className="tool" disabled={busy.bio} onClick={() => setRegen({ kind: "bio" })}>
+                <button className="tool" disabled={busy.bio} onClick={() => openRegen({ kind: "bio" })}>
                   ✨ Rewrite bio
                 </button>
               )
             }
-            productBusy={(i) => (i in busy.products ? busy.products[i] || "Working…" : null)}
+            productBusy={(i) => (s.products[i].id in busy.products ? busy.products[s.products[i].id] || "Working…" : null)}
             productTools={
               preview
                 ? undefined
                 : (i) => (
                     <>
-                      <button className="tool" disabled={i in busy.products} onClick={() => setRegen({ kind: "product_copy", index: i })}>
+                      <button className="tool" disabled={s.products[i].id in busy.products} onClick={() => openRegen({ kind: "product_copy", index: i })}>
                         ✨ Rewrite words
                       </button>
-                      <button className="tool" disabled={i in busy.products} onClick={() => setRegen({ kind: "product", index: i })}>
+                      <button className="tool" disabled={s.products[i].id in busy.products} onClick={() => openRegen({ kind: "product", index: i })}>
                         ↻ Different idea
                       </button>
-                      <button className="tool" disabled={i in busy.products} onClick={() => removeProduct(i)} aria-label="Remove product">
+                      <button className="tool" disabled={s.products[i].id in busy.products} onClick={() => removeProduct(i)} aria-label="Remove product">
                         Remove
                       </button>
                     </>
@@ -625,7 +711,7 @@ export default function Builder() {
                   className="sf-card flex w-full items-center justify-center gap-2 border-dashed p-4 text-[15px] font-semibold"
                   style={{ borderStyle: "dashed" }}
                   disabled={busy.adding}
-                  onClick={() => setRegen({ kind: "add_product" })}
+                  onClick={() => openRegen({ kind: "add_product" })}
                 >
                   {busy.adding ? (
                     <>
@@ -637,7 +723,7 @@ export default function Builder() {
                 </button>
               ) : null
             }
-            onCta={() => preview && flash("Buyers will check out here once payments are on.")}
+            onCta={() => flash("This is the button your buyers tap. Payments are off in this demo.")}
           />
         </div>
 
@@ -730,7 +816,7 @@ export default function Builder() {
                 maxLength={200}
                 value={regenText}
                 onChange={(e) => setRegenText(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && runRegen(regen, regenText)}
+                onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && runRegen(regen, regenText)}
               />
               <div className="mt-4 flex gap-2">
                 <button className="btn btn-ghost flex-1" onClick={() => setRegen(null)}>
@@ -753,8 +839,8 @@ export default function Builder() {
               </h2>
               <p className="hint mt-1">
                 {confirmAll.language
-                  ? "AI will write your bio and products again in this language. Your manual edits will be replaced, but you can undo."
-                  : "AI will suggest new products and copy, different from what you have now. You can undo if you liked the old one better."}
+                  ? "Same products and prices, with the words rewritten in this language. You can undo."
+                  : "AI will suggest new products and copy, different from what you have now. Your store name and style stay. You can undo if you liked the old one better."}
               </p>
               <div className="mt-4 flex gap-2">
                 <button className="btn btn-ghost flex-1" onClick={() => setConfirmAll(null)}>
@@ -765,7 +851,8 @@ export default function Builder() {
                   onClick={() => {
                     const c = confirmAll;
                     setConfirmAll(null);
-                    startGenerate({ fromDraft: draft, fresh: !c.language, language: c.language });
+                    if (c.language) runRegen({ kind: "translate", language: c.language }, "");
+                    else startGenerate({ fromDraft: draft });
                   }}
                 >
                   {confirmAll.language ? "Rewrite" : "Regenerate"}
@@ -839,6 +926,10 @@ export default function Builder() {
   }
 
   /* ---------------- input stage ---------------- */
+  const editForm = (patch: Partial<Form>) => {
+    setForm({ ...form, ...patch });
+    setFormMsg(null); // the old message is about the old text
+  };
   const handleInvalid = formMsg?.field === "handle";
   const aboutInvalid = formMsg?.field === "about";
   return (
@@ -851,6 +942,12 @@ export default function Builder() {
         </p>
       </header>
 
+      {formMsg?.field === "link" && (
+        <p className="notice notice-err mb-5" role="alert">
+          {formMsg.text}
+        </p>
+      )}
+
       {saved && (
         <div className="mb-5 flex items-center gap-3 rounded-2xl border border-[var(--app-line)] bg-white p-3">
           <div className="min-w-0 flex-1">
@@ -860,9 +957,12 @@ export default function Builder() {
           <button
             className="btn btn-sm btn-primary"
             onClick={() => {
+              openSession();
               setDraft(saved);
+              setSaved(null);
               setHistory([]);
               setStage("edit");
+              window.scrollTo({ top: 0 });
             }}
           >
             Open
@@ -893,13 +993,19 @@ export default function Builder() {
               autoComplete="off"
               spellCheck={false}
               inputMode="url"
-              maxLength={80}
+              maxLength={200}
               aria-invalid={handleInvalid || undefined}
+              aria-describedby={handleInvalid ? "handle-msg" : undefined}
               value={form.handle}
-              onChange={(e) => setForm({ ...form, handle: e.target.value.replace(/^@+/, "") })}
+              onChange={(e) => editForm({ handle: e.target.value.replace(/^@+/, "") })}
             />
           </div>
-          <p className="hint mt-1.5">We read your public bio and recent posts. Private or new account? Skip this.</p>
+          {handleInvalid && (
+            <p id="handle-msg" className="notice notice-err mt-2" role="alert">
+              {formMsg?.text}
+            </p>
+          )}
+          <p className="hint mt-1.5">We try to read your public bio and posts. Instagram often blocks this, so add a line below too.</p>
         </div>
 
         <div>
@@ -915,7 +1021,7 @@ export default function Builder() {
             aria-invalid={aboutInvalid && formMsg?.tone === "err" ? true : undefined}
             aria-describedby={aboutInvalid ? "about-msg" : undefined}
             value={form.about}
-            onChange={(e) => setForm({ ...form, about: e.target.value })}
+            onChange={(e) => editForm({ about: e.target.value })}
           />
           {aboutInvalid && (
             <p id="about-msg" className={`notice mt-2 ${formMsg?.tone === "err" ? "notice-err" : "notice-warn"}`} role="alert">
@@ -926,7 +1032,7 @@ export default function Builder() {
             <span className="hint">Need a starting point? Tap one:</span>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {EXAMPLES.map((ex) => (
-                <button key={ex.label} type="button" className="chip" onClick={() => setForm({ ...form, about: ex.text })}>
+                <button key={ex.label} type="button" className="chip" onClick={() => editForm({ about: ex.text })}>
                   {ex.label}
                 </button>
               ))}
@@ -957,14 +1063,13 @@ export default function Builder() {
           </div>
         </div>
 
-        {formMsg?.field === "general" && (
-          <div className="notice notice-err" role="alert">
-            {formMsg.text}
-          </div>
-        )}
-
         <div className="bottombar">
           <div className="mx-auto max-w-[560px]">
+            {formMsg?.field === "general" && (
+              <div className="notice notice-err mb-2.5" role="alert">
+                {formMsg.text}
+              </div>
+            )}
             <button type="submit" className="btn btn-primary w-full text-[16px]">
               {formMsg?.field === "general" ? "Try again" : "Create my store ✨"}
             </button>

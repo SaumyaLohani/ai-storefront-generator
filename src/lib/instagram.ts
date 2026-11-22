@@ -10,8 +10,11 @@ export function cleanHandle(raw: string): string {
   return h.replace(/^@+/, "").replace(/\/+$/, "").toLowerCase();
 }
 
+// Links to posts, reels and app pages, which are not profiles
+const NOT_PROFILES = new Set(["p", "reel", "reels", "stories", "explore", "tv", "accounts", "direct"]);
+
 export function isValidHandle(h: string) {
-  return HANDLE_RE.test(h) && !h.startsWith(".") && !h.endsWith(".") && !h.includes("..");
+  return HANDLE_RE.test(h) && !NOT_PROFILES.has(h) && !h.startsWith(".") && !h.endsWith(".") && !h.includes("..");
 }
 
 /**

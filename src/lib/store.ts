@@ -104,6 +104,10 @@ export const getStats = (slug: string) => hgetall(`stats:${slug}`);
 /** Fixed-window rate limit; protects the free LLM quota from one person hammering it. */
 export async function rateLimit(ip: string, bucket: string, limit: number, windowSec: number) {
   const win = Math.floor(Date.now() / 1000 / windowSec);
-  const n = await incr(`rl:${bucket}:${ip}:${win}`, windowSec);
-  return n <= limit;
+  try {
+    return (await incr(`rl:${bucket}:${ip}:${win}`, windowSec)) <= limit;
+  } catch (e) {
+    console.error("[rateLimit]", e);
+    return true; // a storage hiccup shouldn't stop someone from generating
+  }
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { regeneratePart, type Part } from "@/lib/prompts";
 import { rateLimit } from "@/lib/store";
-import { SourceSchema, StorefrontSchema } from "@/lib/types";
+import { LANGUAGES, SourceSchema, StorefrontSchema } from "@/lib/types";
 import { aiFailure, clientIp, json } from "@/lib/http";
 
 export const maxDuration = 60;
@@ -14,6 +14,7 @@ const Body = z.object({
     z.object({ kind: z.literal("product"), index: z.number().int().min(0).max(3) }),
     z.object({ kind: z.literal("product_copy"), index: z.number().int().min(0).max(3) }),
     z.object({ kind: z.literal("add_product") }),
+    z.object({ kind: z.literal("translate"), language: z.enum(LANGUAGES) }),
   ]),
   instruction: z.string().max(200).default(""),
 });

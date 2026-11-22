@@ -15,6 +15,7 @@ const Body = z.object({
   audience: z.enum(AUDIENCE).default("unknown"),
   language: z.enum(LANGUAGES).default("english"),
   avoid: z.array(z.string().max(120)).max(4).optional(),
+  keepName: z.string().trim().max(60).optional(),
   skipInstagram: z.boolean().optional(),
 });
 
@@ -22,7 +23,7 @@ const IG_MESSAGE: Record<string, string> = {
   invalid: "That doesn't look like an Instagram username. Usernames only use letters, numbers, dots and underscores.",
   // Instagram answers 404 both for missing accounts and for requests it blocks from cloud servers,
   // so this message can't claim the account doesn't exist.
-  not_found: "We couldn't open that Instagram profile. Check the spelling, or just tell us in a line what you do below.",
+  not_found: "We couldn't open that Instagram profile. Check the spelling, or just tell us what you do in a line.",
   private: "Your account is private, so we could only read your bio. Add a line about what you do to get better ideas.",
   unavailable:
     "Instagram isn't letting us read profiles right now. No problem: tell us in a line or two what you do.",
@@ -46,7 +47,7 @@ export async function POST(req: Request) {
   if (!handle && !about)
     return json({ error: "empty", message: "Add your Instagram username or a line about yourself to get started." }, 422);
 
-  if (!(await rateLimit(clientIp(req), "gen", 25, 600)))
+  if (!(await rateLimit(clientIp(req), "gen", 40, 600)))
     return json({ error: "busy", message: "You've generated a lot in a short time. Take a breather and try again in a few minutes." }, 429);
 
   // 1. Instagram, best effort
@@ -87,7 +88,7 @@ export async function POST(req: Request) {
 
   try {
     const t0 = Date.now();
-    const r = await generateStorefront(source, ig, audience, { avoid: b.avoid });
+    const r = await generateStorefront(source, ig, audience, { avoid: b.avoid, keepName: b.keepName });
     if (!r.ok) return json({ error: "unclear", message: r.question }, 422);
     console.log(`[generate] ${r.model} ${Date.now() - t0}ms ig=${ig?.status ?? "none"}`);
     return json({

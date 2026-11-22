@@ -22,10 +22,23 @@ const pid = customAlphabet("abcdefghijkmnpqrstuvwxyz23456789", 6);
 const LANGUAGE_RULE: Record<Language, string> = {
   english: "Write all creator-facing copy in simple, warm Indian English. Short sentences. No jargon.",
   hinglish:
-    "Write all copy in Hinglish: Hindi and English mixed naturally, in Roman script, the way Indian creators write Instagram captions (e.g. 'Ghar pe hi fit raho, bina gym ke'). Keep product formats and numbers easy to read.",
+    "Write all copy in Hinglish: Hindi and English mixed naturally, in Roman script, the way Indian creators write Instagram captions (e.g. 'Ghar pe hi fit raho, bina gym ke'). Keep product formats and numbers easy to read. Unless the input states the creator's gender, don't guess it: talk to the buyer ('aap seekhenge', 'aapko milega') instead of gendered first-person verbs like 'karti/karta hoon'.",
   hindi:
-    "Write all copy in simple Hindi in Devanagari script. Common English words that Indians use daily (course, plan, call, PDF, template) may stay in English.",
+    "Write ALL copy (tagline, bio, titles, descriptions, every includes point, priceRationale, assumptions) in simple, everyday Hindi in Devanagari script. Never write Hindi in Roman letters. Common English words Indians use daily may appear, but also in Devanagari (कोर्स, प्लान, कॉल), except short forms like PDF. Unless the input states the creator's gender, don't guess it: talk to the buyer ('आप सीखेंगे', 'आपको मिलेगा') instead of first-person verbs like करती/करता हूँ.",
 };
+
+/** Wrong-script copy ("Yeh e-book..." on a Hindi page) is rejected and retried. */
+function scriptProblem(language: Language, texts: string[]): string | null {
+  for (const t of texts) {
+    const deva = t.match(/[\u0900-\u097F]/g)?.length ?? 0;
+    const latin = t.match(/[a-zA-Z]/g)?.length ?? 0;
+    if (deva + latin < 8) continue;
+    if (language === "hindi" && deva < latin) return "write every field in Hindi using Devanagari script, not Roman letters";
+    if (language !== "hindi" && deva > 0) return "do not use Devanagari script, use Roman letters only";
+  }
+  return null;
+}
+const productTexts = (p: { description: string; includes: string[] }) => [p.description, p.includes.join(" ")];
 
 const PRICE_GUIDE = Object.entries(PRICE_BANDS)
   .map(([f, b]) => `- ${f}: ${inr(b.min)}–${inr(b.max)}${b.note ? " " + b.note : ""}`)
@@ -103,16 +116,19 @@ const RawProduct = z.object({
 });
 type RawProduct = z.infer<typeof RawProduct>;
 
-const RawStore = z.object({
-  inputUsable: z.boolean(),
-  followUpQuestion: z.string().default(""),
-  name: z.string().min(1).max(80),
-  tagline: z.string().max(160),
-  bio: z.string().min(10).max(700),
-  niche: z.string().max(80),
-  assumptions: z.array(z.string().max(200)).max(4).default([]),
-  products: z.array(RawProduct).min(1).max(4),
-});
+// When the input is unusable the other fields are throwaway placeholders, so don't validate them.
+const RawStore = z.discriminatedUnion("inputUsable", [
+  z.object({ inputUsable: z.literal(false), followUpQuestion: z.string().default("") }),
+  z.object({
+    inputUsable: z.literal(true),
+    name: z.string().min(1).max(120),
+    tagline: z.string().max(240),
+    bio: z.string().min(10).max(1000),
+    niche: z.string().max(160),
+    assumptions: z.array(z.string().max(300)).max(6).default([]),
+    products: z.array(RawProduct).min(1).max(4),
+  }),
+]);
 
 const storeSchema = {
   type: "OBJECT",
@@ -170,20 +186,24 @@ export async function generateStorefront(
   src: Source,
   ig: InstagramSignals | null,
   audience: Audience,
-  opts: { avoid?: string[] } = {},
+  opts: { avoid?: string[]; keepName?: string } = {},
 ): Promise<GenerateResult> {
   const avoid = opts.avoid?.length
     ? `\n\nThe creator asked for fresh ideas. Do NOT repeat these previous products, try different angles: ${opts.avoid.join(" | ")}`
     : "";
+  const keep = opts.keepName
+    ? `\n\nThe store is already called "${opts.keepName}". Use exactly that name and do not list the name as an assumption.`
+    : "";
   const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
-  const prompt = `TODAY: ${today} (use the current or next year if a product is dated)\n\nCREATOR\n${creatorContext(src, ig, audience)}\n\nLANGUAGE\n${LANGUAGE_RULE[src.language]}\n\nCreate their storefront with 3 products (2 if the input is very thin, 4 only if they clearly have a large range).${avoid}`;
+  const prompt = `TODAY: ${today} (use the current or next year if a product is dated)\n\nCREATOR\n${creatorContext(src, ig, audience)}\n\nLANGUAGE\n${LANGUAGE_RULE[src.language]}\n\nCreate their storefront with 3 products (2 if the input is very thin, 4 only if they clearly have a large range).${avoid}${keep}`;
 
   const { data, model } = await generateJSON({
     system: SYSTEM,
     prompt,
     schema: storeSchema,
     validate: RawStore,
-    check: storeCheck,
+    check: (d) =>
+      storeCheck(d) ?? (d.inputUsable ? scriptProblem(src.language, [d.bio, ...d.products.flatMap(productTexts)]) : null),
     temperature: opts.avoid?.length ? 1.0 : 0.85,
   });
 
@@ -196,7 +216,7 @@ export async function generateStorefront(
   }
 
   const storefront: Storefront = {
-    name: (ig?.fullName || data.name).trim().slice(0, 60),
+    name: (opts.keepName || ig?.fullName || data.name).trim().slice(0, 60),
     handle: src.handle,
     tagline: data.tagline.trim().slice(0, 120),
     bio: data.bio.trim().slice(0, 600),
@@ -212,7 +232,8 @@ export type Part =
   | { kind: "bio" }
   | { kind: "product"; index: number } // brand new idea in that slot
   | { kind: "product_copy"; index: number } // rewrite words, keep format & price
-  | { kind: "add_product" };
+  | { kind: "add_product" }
+  | { kind: "translate"; language: Language }; // same store, same prices, new language
 
 function storeSummary(s: Storefront) {
   return [
@@ -232,6 +253,78 @@ const bioSchema = {
   required: ["tagline", "bio"],
 };
 
+const TranslateOut = z.object({
+  tagline: z.string().max(240),
+  bio: z.string().min(5).max(1000),
+  products: z.array(
+    z.object({
+      title: z.string().min(2).max(160),
+      priceRationale: z.string().max(600).default(""),
+      description: z.string().min(5).max(1100),
+      includes: z.array(z.string().max(200)).max(6),
+    }),
+  ),
+});
+const translateSchema = {
+  type: "OBJECT",
+  properties: {
+    tagline: { type: "STRING" },
+    bio: { type: "STRING" },
+    products: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          title: { type: "STRING" },
+          priceRationale: { type: "STRING" },
+          description: { type: "STRING" },
+          includes: { type: "ARRAY", items: { type: "STRING" } },
+        },
+        required: ["title", "priceRationale", "description", "includes"],
+      },
+    },
+  },
+  required: ["tagline", "bio", "products"],
+};
+
+async function translateStore(store: Storefront, language: Language): Promise<Partial<Storefront>> {
+  const copy = {
+    tagline: store.tagline,
+    bio: store.bio,
+    products: store.products.map((p) => ({
+      title: p.title,
+      priceRationale: p.priceRationale,
+      description: p.description,
+      includes: p.includes.filter((x) => x.trim()),
+    })),
+  };
+  const { data } = await generateJSON({
+    system: SYSTEM,
+    prompt: `CURRENT STORE COPY (JSON)\n${JSON.stringify(copy)}\n\nLANGUAGE\n${LANGUAGE_RULE[language]}\n\nTASK: Rewrite all of this copy, including the product titles, in the language above. Keep the same meaning, the same products in the same order, the same number of includes per product, and every number and rupee amount unchanged. Keep the store name "${store.name}" as it is wherever it appears. If a field is empty, return it empty. Return JSON in the same shape.`,
+    schema: translateSchema,
+    validate: TranslateOut,
+    check: (d) =>
+      d.products.length !== store.products.length
+        ? `return exactly ${store.products.length} products`
+        : d.products.some((p, i) => p.includes.length !== copy.products[i].includes.length)
+          ? "keep the same number of includes for each product"
+          : scriptProblem(language, [d.bio, ...d.products.flatMap(productTexts)]),
+    temperature: 0.6,
+  });
+  return {
+    language,
+    tagline: store.tagline.trim() ? data.tagline.trim().slice(0, 120) : "",
+    bio: data.bio.trim().slice(0, 600),
+    products: store.products.map((p, i) => ({
+      ...p,
+      title: data.products[i].title.trim().slice(0, 90),
+      priceRationale: p.priceRationale ? data.products[i].priceRationale.trim().slice(0, 400) : "",
+      description: data.products[i].description.trim().slice(0, 700),
+      includes: data.products[i].includes.map((s) => s.trim().slice(0, 120)),
+    })),
+  };
+}
+
 export async function regeneratePart(
   store: Storefront,
   src: Source,
@@ -239,6 +332,8 @@ export async function regeneratePart(
   instruction: string,
   audience: Audience,
 ): Promise<Partial<Storefront> & { product?: Product }> {
+  if (part.kind === "translate") return translateStore(store, part.language);
+
   const today = new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "Asia/Kolkata" });
   const ctx = `TODAY: ${today}\n\nCREATOR (original input)\n${creatorContext(src, null, audience)}\n\nCURRENT STORE (the creator may have edited it; respect their edits)\n${storeSummary(store)}\n\nLANGUAGE\n${LANGUAGE_RULE[store.language]}`;
   const ask = instruction ? `\nThe creator's instruction: "${instruction.slice(0, 200)}"` : "";
@@ -249,6 +344,7 @@ export async function regeneratePart(
       prompt: `${ctx}\n\nTASK: Write a NEW tagline and bio for this store, different from the current one.${ask}`,
       schema: bioSchema,
       validate: BioOut,
+      check: (d) => scriptProblem(store.language, [d.bio]),
       temperature: 1,
     });
     return { tagline: data.tagline.trim().slice(0, 120), bio: data.bio.trim().slice(0, 600) };
@@ -261,6 +357,7 @@ export async function regeneratePart(
       prompt: `${ctx}\n\nTASK: Rewrite the title, description and includes of product ${part.index + 1} ("${cur.title}"). Keep format "${cur.format}" and price ${cur.price}. Make it clearer and more convincing than the current copy.\nCurrent description: ${cur.description}${ask}`,
       schema: productSchema,
       validate: RawProduct,
+      check: (p) => scriptProblem(store.language, productTexts(p)),
       temperature: 1,
     });
     return {
@@ -285,7 +382,7 @@ export async function regeneratePart(
     schema: productSchema,
     validate: RawProduct,
     check: (p) =>
-      others.some((o) => o.title.toLowerCase() === p.title.toLowerCase()) ? "duplicate of an existing product" : null,
+      others.some((o) => o.title.toLowerCase() === p.title.toLowerCase()) ? "duplicate of an existing product" : scriptProblem(store.language, productTexts(p)),
     temperature: 1,
   });
   const keepId = part.kind === "product" ? store.products[part.index].id : undefined;
