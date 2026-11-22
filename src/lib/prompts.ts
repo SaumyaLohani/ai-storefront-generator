@@ -35,7 +35,7 @@ function scriptProblem(language: Language, texts: string[]): string | null {
     const latin = t.match(/[a-zA-Z]/g)?.length ?? 0;
     if (letters < 8) continue;
     if (language === "hindi" && deva < letters / 2) return "write every field in Hindi using Devanagari script, not Roman letters";
-    if (language !== "hindi" && latin < letters * 0.9) return "use Roman (English) letters only, no Devanagari or other script";
+    if (language !== "hindi" && latin < letters * 0.6) return "use Roman (English) letters only, no Devanagari or other script";
   }
   return null;
 }
