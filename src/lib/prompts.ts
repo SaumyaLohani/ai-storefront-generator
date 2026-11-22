@@ -31,22 +31,28 @@ const LANGUAGE_RULE: Record<Language, string> = {
 function scriptProblem(language: Language, texts: string[]): string | null {
   for (const t of texts) {
     const deva = t.match(/[\u0900-\u097F]/g)?.length ?? 0;
+    const letters = t.match(/[\p{L}\p{M}]/gu)?.length ?? 0; // any script: the model once answered in Urdu
     const latin = t.match(/[a-zA-Z]/g)?.length ?? 0;
-    if (deva + latin < 8) continue;
-    if (language === "hindi" && deva < latin) return "write every field in Hindi using Devanagari script, not Roman letters";
-    if (language !== "hindi" && deva > 0) return "do not use Devanagari script, use Roman letters only";
+    if (letters < 8) continue;
+    if (language === "hindi" && deva < letters / 2) return "write every field in Hindi using Devanagari script, not Roman letters";
+    if (language !== "hindi" && latin < letters * 0.9) return "use Roman (English) letters only, no Devanagari or other script";
   }
   return null;
 }
-const GENDERED = /\b[a-z]+(?:ta|ti|raha|rahi)\s+(?:hoon|hun|hu|hoo)\b|(?:ता|ती|रहा|रही)\s+(?:हूँ|हूं)/i;
-/** "karta/karti hoon" guesses the creator's gender unless their own words used such a form.
- *  Asks for a rewrite once only: a matter of tone must never fail the whole request. */
+const HE = /[a-z]+(?:ta|raha)\s+(?:hoon|hun|hu|hoo)\b|(?:ता|रहा)\s+(?:हूँ|हूं)/i;
+const SHE = /[a-z]+(?:ti|rahi)\s+(?:hoon|hun|hu|hoo)\b|(?:ती|रही)\s+(?:हूँ|हूं)/i;
+/** "karta/karti hoon" must match how the creator wrote about themselves; if they didn't say,
+ *  the copy shouldn't guess. Asks for a rewrite once only: tone must never fail the request. */
 function genderCheck(known: string) {
-  let asked = GENDERED.test(known);
+  const okHe = HE.test(known);
+  const okShe = SHE.test(known);
+  let asked = false;
   return (text: string): string | null => {
-    if (asked || !GENDERED.test(text)) return null;
+    if (asked || !((HE.test(text) && !okHe) || (SHE.test(text) && !okShe))) return null;
     asked = true;
-    return "the bio guesses the creator's gender with a first-person verb (like 'karta hoon', 'karti hoon', 'करता हूँ'). Rewrite it without any such verb, e.g. 'Yahan aapko milega...' or 'Aap seekhenge...'";
+    return okHe || okShe
+      ? `the creator uses the ${okShe ? "feminine" : "masculine"} form for themselves (${okShe ? "'sikhati hoon', 'करती हूँ'" : "'sikhata hoon', 'करता हूँ'"}). Use that form in the bio`
+      : "the bio guesses the creator's gender with a first-person verb (like 'karta hoon', 'karti hoon', 'करता हूँ'). Rewrite it without any such verb or slash form, e.g. 'Yahan aapko milega...' or 'Aap seekhenge...'";
   };
 }
 const productTexts = (p: { description: string; includes: string[] }) => [p.description, p.includes.join(" ")];
